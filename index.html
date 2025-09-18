@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MPU6050 Library code</title>
+  <meta name="description" content="One-click Copy page for sharing code." />
+  <style>
+    :root{
+      --bg: #f7fafc; --card:#ffffff; --text:#151923; --brand:#2563eb; --brand-2:#22c55e; --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; --rounded:16px;
+    }
+    *{box-sizing:border-box}
+    body{margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial; color:var(--text); background:#f7fbff}
+    .wrap{max-width: 840px; margin: 28px auto; padding: 12px}
+    .card{background:var(--card); border-radius:var(--rounded); box-shadow:0 8px 24px rgba(16,24,40,.06); padding:18px}
+    h1{margin:2px 0 12px; font-size: clamp(22px, 3vw, 30px)}
+
+    .tools{display:flex; gap:10px; margin: 8px 0 12px}
+    button{appearance:none; border:0; border-radius:999px; padding:10px 16px; font-weight:700; cursor:pointer; background:var(--brand); color:#fff; transition:transform .05s ease}
+    button:active{transform:translateY(1px)}
+    .copied{background:var(--brand-2)!important}
+
+    .codewrap{position:relative}
+    pre{margin:0; background:#0b1220; color:#e4ecff; border-radius:12px; padding:14px; line-height:1.4; font-family:var(--mono); font-size:14px; overflow:auto; max-height:240px}
+    code{font-family:var(--mono)}
+
+    @media (prefers-color-scheme: dark){
+      body{background:#0b1220; color:#eef2ff}
+      .card{background:#0e1526; box-shadow:none}
+      pre{background:#050816; color:#dbe7ff}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>MPU6050 Library code</h1>
+
+      <div class="tools">
+        <button id="copyBtn" aria-label="Copy code">📋 Copy Code</button>
+      </div>
+
+      <div class="codewrap">
+        <pre id="code">
+<code>
+ from utime import sleep_ms
+from machine import I2C
+from math import sqrt, degrees, acos, atan2
+
+def default_wait():
+    '''
+    delay of 50 ms
+    '''
+    sleep_ms(50)
+
+class Vector3d(object):
+    '''
+    Represents a vector in a 3D space using Cartesian coordinates.
+    Internally uses sensor relative coordinates.
+    Returns vehicle-relative x, y and z values.
+    '''
+    def __init__(self, transposition, scaling, update_function):
+        self._vector = [0, 0, 0]
+        self._ivector = [0, 0, 0]
+        self.cal = (0, 0, 0)
+        self.argcheck(transposition, "Transposition")
+        self.argcheck(scaling, "Scaling")
+        if set(transposition) != {0, 1, 2}:
+            raise ValueError('Transpose indices must be unique and in range 0-2')
+        self._scale = scaling
+        self._transpose = transposition
+        self.update = update_function
+
+    def argcheck(self, arg, name):
+        '''
+        checks if arguments are of correct length
+        '''
+        if len(arg) != 3 or not (type(arg) is list or type(arg) is tuple):
+            raise ValueError(name + ' must be a 3 element list or tuple')
+
+    def calibrate(self, stopfunc, waitfunc=default_wait):
+        '''
+        calibration routine, sets cal
+        '''
+        self.update()
+        maxvec = self._vector[:]
+        minvec = self._vector[:]
+        while not stopfunc():
+            waitfunc()
+            self.update()
+            maxvec = list(map(max, maxvec, self._vector))
+            minvec = list(map(min, minvec, self._vector))
+        self.cal = tuple(map(lambda a, b: (a + b)/2, maxvec, minvec))
+
+    @property
+    def _calvector(self):
+        return list(map(lambda val, offset: val - offset, self._vector, self.cal))
+
+    @property
+    def x(self):
+        self.update()
+        return self._calvector[self._transpose[0]] * self._scale[0]
+
+    @property
+    def y(self):
+        self.update()
+        return self._calvector[self._transpose[1]] * self._scale[1]
+
+    @property
+    def z(self):
+        self.update()
+        return self._calvector[self._transpose[2]] * self._scale[2]
+
+    @property
+    def xyz(self):
+        self.update()
+        return (self._calvector[self._transpose[0]] * self._scale[0],
+                self._calvector[self._transpose[1]] * self._scale[1],
+                self._calvector[self._transpose[2]] * self._scale[2])
+
+    @property
+    def magnitude(self):
+        x, y, z = self.xyz
+        return sqrt(x**2 + y**2 + z**2)
+
+    @property
+    def inclination(self):
+        x, y, z = self.xyz
+        return degrees(acos(z / sqrt(x**2 + y**2 + z**2)))
+
+    @property
+    def elevation(self):
+        return 90 - self.inclination
+
+    @property
+    def azimuth(self):
+        x, y, z = self.xyz
+        return degrees(atan2(y, x))
+
+    # Raw integer values
+    @property
+    def ix(self):
+        return self._ivector[0]
+
+    @property
+    def iy(self):
+        return self._ivector[1]
+
+    @property
+    def iz(self):
+        return self._ivector[2]
+
+    @property
+    def ixyz(self):
+        return self._ivector
+
+    @property
+    def transpose(self):
+        return tuple(self._transpose)
+
+    @property
+    def scale(self):
+        return tuple(self._scale)
+
+class MPUException(OSError):
+    pass
+
+def bytes_toint(msb, lsb):
+    if not msb & 0x80:
+        return msb << 8 | lsb
+    return - (((msb ^ 255) << 8) | (lsb ^ 255) + 1)
+
+class MPU6050(object):
+    _I2Cerror = "I2C failure when communicating with IMU"
+    _mpu_addr = (104, 105)
+    _chip_id = 104
+
+    def __init__(self, side_str, device_addr=None, transposition=(0, 1, 2), scaling=(1, 1, 1)):
+        self._accel = Vector3d(transposition, scaling, self._accel_callback)
+        self._gyro = Vector3d(transposition, scaling, self._gyro_callback)
+        self.buf1 = bytearray(1)
+        self.buf2 = bytearray(2)
+        self.buf6 = bytearray(6)
+
+        sleep_ms(200)
+        if isinstance(side_str, str):
+            self._mpu_i2c = I2C(side_str)
+        elif hasattr(side_str, 'readfrom'):
+            self._mpu_i2c = side_str
+        else:
+            raise ValueError("Invalid I2C instance")
+
+        if device_addr is None:
+            devices = set(self._mpu_i2c.scan())
+            mpus = devices.intersection(set(self._mpu_addr))
+            if len(mpus) == 0:
+                raise MPUException("No MPU's detected")
+            elif len(mpus) == 1:
+                self.mpu_addr = mpus.pop()
+            else:
+                raise ValueError("Two MPU's detected: must specify a device address")
+        else:
+            if device_addr not in (0, 1):
+                raise ValueError('Device address must be 0 or 1')
+            self.mpu_addr = self._mpu_addr[device_addr]
+
+        self.chip_id
+        self.wake()
+        self.passthrough = True
+        self.accel_range = 0
+        self.gyro_range = 0
+
+    def _read(self, buf, memaddr, addr):
+        self._mpu_i2c.readfrom_mem_into(addr, memaddr, buf)
+
+    def _write(self, data, memaddr, addr):
+        self.buf1[0] = data
+        self._mpu_i2c.writeto_mem(addr, memaddr, self.buf1)
+
+    def wake(self):
+        try:
+            self._write(0x01, 0x6B, self.mpu_addr)
+        except OSError:
+            raise MPUException(self._I2Cerror)
+        return 'awake'
+
+    def sleep(self):
+        try:
+            self._write(0x40, 0x6B, self.mpu_addr)
+        except OSError:
+            raise MPUException(self._I2Cerror)
+        return 'asleep'
+
+    @property
+    def chip_id(self):
+        try:
+            self._read(self.buf1, 0x75, self.mpu_addr)
+        except OSError:
+            raise MPUException(self._I2Cerror)
+        chip_id = int(self.buf1[0])
+        if chip_id != self._chip_id:
+            raise ValueError('Bad chip ID retrieved: MPU communication failure')
+        return chip_id
+
+    @property
+    def sensors(self):
+        return self._accel, self._gyro
+
+    @property
+    def temperature(self):
+        try:
+            self._read(self.buf2, 0x41, self.mpu_addr)
+        except OSError:
+            raise MPUException(self._I2Cerror)
+        return bytes_toint(self.buf2[0], self.buf2[1]) / 340 + 35
+
+    @property
+    def passthrough(self):
+        try:
+            self._read(self.buf1, 0x37, self.mpu_addr)
+            return self.buf1[0] & 0x02 > 0
+        except OSError:
+            raise MPUException(self._I2Cerror)
+
+    @passthrough.setter
+    def passthrough(self, mode):
+        if type(mode) is bool:
+            val = 2 if mode else 0
+            try:
+                self._write(val, 0x37, self.mpu_addr)
+                self._write(0x00, 0x6A, self.mpu_addr)
+            except OSError:
+                raise MPUException(self._I2Cerror)
+        else:
+            raise ValueError('pass either True or False')
+
+    @property
+    def accel_range(self):
+        try:
+            self._read(self.buf1, 0x1C, self.mpu_addr)
+            return self.buf1[0] // 8
+        except OSError:
+            raise MPUException(self._I2Cerror)
+
+    @accel_range.setter
+    def accel_range(self, accel_range):
+        ar_bytes = (0x00, 0x08, 0x10, 0x18)
+        if accel_range in range(len(ar_bytes)):
+            try:
+                self._write(ar_bytes[accel_range], 0x1C, self.mpu_addr)
+            except OSError:
+                raise MPUException(self._I2Cerror)
+        else:
+            raise ValueError('accel_range can only be 0, 1, 2 or 3')
+
+    @property
+    def gyro_range(self):
+        try:
+            self._read(self.buf1, 0x1B, self.mpu_addr)
+            return self.buf1[0] // 8
+        except OSError:
+            raise MPUException(self._I2Cerror)
+
+    @gyro_range.setter
+    def gyro_range(self, gyro_range):
+        gr_bytes = (0x00, 0x08, 0x10, 0x18)
+        if gyro_range in range(len(gr_bytes)):
+            try:
+                self._write(gr_bytes[gyro_range], 0x1B, self.mpu_addr)
+            except OSError:
+                raise MPUException(self._I2Cerror)
+        else:
+            raise ValueError('gyro_range can only be 0, 1, 2 or 3')
+
+    @property
+    def accel(self):
+        return self._accel
+
+    def _accel_callback(self):
+        try:
+            self._read(self.buf6, 0x3B, self.mpu_addr)
+        except OSError:
+            raise MPUException(self._I2Cerror)
+        self._accel._ivector[0] = bytes_toint(self.buf6[0], self.buf6[1])
+        self._accel._ivector[1] = bytes_toint(self.buf6[2], self.buf6[3])
+        self._accel._ivector[2] = bytes_toint(self.buf6[4], self.buf6[5])
+        scale = (16384, 8192, 4096, 2048)
+        rng = self.accel_range
+        self._accel._vector[0] = self._accel._ivector[0] / scale[rng]
+        self._accel._vector[1] = self._accel._ivector[1] / scale[rng]
+        self._accel._vector[2] = self._accel._ivector[2] / scale[rng]
+
+    @property
+    def gyro(self):
+        return self._gyro
+
+    def _gyro_callback(self):
+        try:
+            self._read(self.buf6, 0x43, self.mpu_addr)
+        except OSError:
+            raise MPUException(self._I2Cerror)
+        self._gyro._ivector[0] = bytes_toint(self.buf6[0], self.buf6[1])
+        self._gyro._ivector[1] = bytes_toint(self.buf6[2], self.buf6[3])
+        self._gyro._ivector[2] = bytes_toint(self.buf6[4], self.buf6[5])
+        scale = (131, 65.5, 32.8, 16.4)
+        rng = self.gyro_range
+        self._gyro._vector[0] = self._gyro._ivector[0] / scale[rng]
+        self._gyro._vector[1] = self._gyro._ivector[1] / scale[rng]
+        self._gyro._vector[2] = self._gyro._ivector[2] / scale[rng]
+</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const copyBtn = document.getElementById('copyBtn');
+    const codeEl = document.getElementById('code');
+
+    function getPlainCode(){
+      return codeEl.innerText.replace(/\n+$/,'');
+    }
+
+    async function copyCode(){
+      try{
+        await navigator.clipboard.writeText(getPlainCode());
+        copyBtn.classList.add('copied');
+        copyBtn.textContent = '✅ Copied!';
+        setTimeout(()=>{copyBtn.classList.remove('copied'); copyBtn.textContent='📋 Copy Code';}, 1800);
+      }catch(err){
+        const ta = document.createElement('textarea');
+        ta.value = getPlainCode();
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        copyBtn.textContent = '✅ Copied!';
+        setTimeout(()=>{copyBtn.textContent='📋 Copy Code';}, 1800);
+      }
+    }
+
+    copyBtn.addEventListener('click', copyCode);
+  </script>
+</body>
+</html>
