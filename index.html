@@ -56,7 +56,7 @@ class Vector3d(object):
     '''
     Represents a vector in a 3D space using Cartesian coordinates.
     Internally uses sensor relative coordinates.
-    Returns vehicle-relative x, y and z values.
+    Returns vehicle-relative x, y and values.
     '''
     def __init__(self, transposition, scaling, update_function):
         self._vector = [0, 0, 0]
@@ -199,9 +199,12 @@ class MPU6050(object):
             else:
                 raise ValueError("Two MPU's detected: must specify a device address")
         else:
-            if device_addr not in (0, 1):
-                raise ValueError('Device address must be 0 or 1')
-            self.mpu_addr = self._mpu_addr[device_addr]
+            if device_addr in (0, 1):
+                self.mpu_addr = self._mpu_addr[device_addr]
+            elif device_addr in (0x68, 0x69, 104, 105):
+                self.mpu_addr = device_addr
+            else:
+                raise ValueError('Device address must be 0, 1, 0x68, or 0x69')
 
         self.chip_id
         self.wake()
